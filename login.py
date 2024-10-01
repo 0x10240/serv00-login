@@ -1,62 +1,60 @@
 import json
 import asyncio
-from pyppeteer import launch
+from playwright.async_api import async_playwright
 from datetime import datetime, timedelta
 import aiofiles
 import random
 import requests
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+current_path = os.path.dirname(os.path.abspath(__file__))
+account_path = os.path.join(current_path, "accounts.json")
 
 # 从环境变量中获取 Telegram Bot Token 和 Chat ID
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
+# os.system("playwright install")
+# os.system("playwright install-deps")
+
 def format_to_iso(date):
     return date.strftime('%Y-%m-%d %H:%M:%S')
+
 
 async def delay_time(ms):
     await asyncio.sleep(ms / 1000)
 
-# 全局浏览器实例
-browser = None
 
 # telegram消息
 message = 'serv00&ct8自动化脚本运行\n'
 
-async def login(username, password, panel):
-    global browser
 
-    page = None  # 确保 page 在任何情况下都被定义
+async def login(username, password, panel):
+    page = None
     serviceName = 'ct8' if 'ct8' in panel else 'serv00'
     try:
-        if not browser:
-            browser = await launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+            page = await browser.new_page()
+            login_url = f'https://{panel}/login/?next=/'
 
-        page = await browser.newPage()
-        url = f'https://{panel}/login/?next=/'
-        await page.goto(url)
+            await page.goto(login_url)
+            await page.fill('#id_username', username)
+            await page.fill('#id_password', password)
 
-        username_input = await page.querySelector('#id_username')
-        if username_input:
-            await page.evaluate('''(input) => input.value = ""''', username_input)
+            login_button = await page.query_selector('#submit')
+            if login_button:
+                async with page.expect_navigation():
+                    await login_button.click()
+            else:
+                raise Exception('无法找到登录按钮')
 
-        await page.type('#id_username', username)
-        await page.type('#id_password', password)
+            is_logged_in = await page.locator('a[href="/logout/"]').count() > 0
 
-        login_button = await page.querySelector('#submit')
-        if login_button:
-            await login_button.click()
-        else:
-            raise Exception('无法找到登录按钮')
-
-        await page.waitForNavigation()
-
-        is_logged_in = await page.evaluate('''() => {
-            const logoutButton = document.querySelector('a[href="/logout/"]');
-            return logoutButton !== null;
-        }''')
-
-        return is_logged_in
+            return is_logged_in
 
     except Exception as e:
         print(f'{serviceName}账号 {username} 登录时出现错误: {e}')
@@ -66,12 +64,13 @@ async def login(username, password, panel):
         if page:
             await page.close()
 
+
 async def main():
     global message
     message = 'serv00&ct8自动化脚本运行\n'
 
     try:
-        async with aiofiles.open('accounts.json', mode='r', encoding='utf-8') as f:
+        async with aiofiles.open(account_path, mode='r', encoding='utf-8') as f:
             accounts_json = await f.read()
         accounts = json.loads(accounts_json)
     except Exception as e:
@@ -89,19 +88,18 @@ async def main():
         if is_logged_in:
             now_utc = format_to_iso(datetime.utcnow())
             now_beijing = format_to_iso(datetime.utcnow() + timedelta(hours=8))
-            success_message = f'{serviceName}账号 {username} 于北京时间 {now_beijing}（UTC时间 {now_utc}）登录成功！'
+            success_message = f'{serviceName} 账号 {username} 于北京时间 {now_beijing}（UTC时间 {now_utc}）登录成功！'
             message += success_message + '\n'
             print(success_message)
         else:
-            message += f'{serviceName}账号 {username} 登录失败，请检查{serviceName}账号和密码是否正确。\n'
-            print(f'{serviceName}账号 {username} 登录失败，请检查{serviceName}账号和密码是否正确。')
+            message += f'{serviceName} 账号 {username} 登录失败，请检查{serviceName}账号和密码是否正确。\n'
+            print(f'{serviceName} 账号 {username} 登录失败，请检查{serviceName}账号和密码是否正确。')
 
         delay = random.randint(1000, 8000)
         await delay_time(delay)
-        
-    message += f'所有{serviceName}账号登录完成！'
+
     await send_telegram_message(message)
-    print(f'所有{serviceName}账号登录完成！')
+
 
 async def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -128,6 +126,7 @@ async def send_telegram_message(message):
             print(f"发送消息到Telegram失败: {response.text}")
     except Exception as e:
         print(f"发送消息到Telegram时出错: {e}")
+
 
 if __name__ == '__main__':
     asyncio.run(main())
